@@ -33,20 +33,21 @@ const norm = s =>
     .replace(/\p{Diacritic}/gu, "")
     .replace(/[^a-z0-9]/g, "");
 
-function findOdds(match, events) {
-  return (
-    events.find(
-      e =>
-        norm(e.home) === norm(match.home.name) &&
-        norm(e.away) === norm(match.away.name)
-    )?.odds || {}
+function findOdds(match, events = []) {
+  const found = events.find(
+    e =>
+      norm(e?.home) === norm(match?.home?.name) &&
+      norm(e?.away) === norm(match?.away?.name)
   );
+
+  return found?.odds || {};
 }
 
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
-    version: "2.0.0",
+    version: "2.0.1",
+
     commercialMode:
       process.env.COMMERCIAL_MODE !== "false",
 
@@ -71,66 +72,83 @@ app.get("/api/day", async (req, res) => {
   const matches = [];
   const errors = [];
 
-  await Promise.all(
-    LEAGUES.map(async league => {
+  for (const league of LEAGUES) {
+    try {
+      const fixtures =
+        await apiFootball.fixtures({
+          date,
+          leagueCode: league.code,
+          season
+        });
+
+      if (!Array.isArray(fixtures) || fixtures.length === 0) {
+        continue;
+      }
+
+      let standings = [];
+
       try {
-        const fixtures =
-          await apiFootball.fixtures({
-            date,
-            leagueCode: league.code,
-            season
-          });
-
-        if (!fixtures.length) return;
-
-        const standings =
+        standings =
           await apiFootball.standings({
             leagueCode: league.code,
             season
           });
+      } catch (error) {
+        errors.push(
+          `${league.code} standings: ${error.message}`
+        );
+      }
 
+      let oddsPack = {
+        events: [],
+        quota: null
+      };
+
+      if (process.env.ODDS_API_KEY) {
         try {
-  if (process.env.ODDS_API_KEY) {
-    const result = await oddsApi.oddsForLeague(league.code);
-
-    if (result?.events) {
-      oddsPack = result;
-    }
-  }
-} catch (error) {
-  errors.push(`${league.code} odds: ${error.message}`);
-}
+          const result =
+            await oddsApi.oddsForLeague(
+              league.code
             );
+
+          if (result && Array.isArray(result.events)) {
+            oddsPack = result;
+          }
         } catch (error) {
           errors.push(
             `${league.code} odds: ${error.message}`
           );
         }
+      }
 
-        for (const fixture of fixtures) {
-          const [
-            homeRows,
-            awayRows,
-            providerPrediction
-          ] = await Promise.all([
-            apiFootball.recentFixtures({
+      for (const fixture of fixtures) {
+        try {
+          const homeRows =
+            await apiFootball.recentFixtures({
               leagueCode: league.code,
               season,
               teamId: fixture.home.id,
               last: 12
-            }),
+            });
 
-            apiFootball.recentFixtures({
+          const awayRows =
+            await apiFootball.recentFixtures({
               leagueCode: league.code,
               season,
               teamId: fixture.away.id,
               last: 12
-            }),
+            });
 
-            apiFootball
-              .providerPrediction(fixture.id)
-              .catch(() => null)
-          ]);
+          let providerPrediction = null;
+
+          try {
+            providerPrediction =
+              await apiFootball.providerPrediction(
+                fixture.id
+              );
+          } catch {
+            providerPrediction = null;
+          }
 
           const model = predict({
             homeRows,
@@ -142,28 +160,37 @@ app.get("/api/day", async (req, res) => {
           });
 
           const odds =
-            findOdds(fixture, oddsPack.events);
+            findOdds(
+              fixture,
+              oddsPack.events || []
+            );
 
           const markets = {};
 
           for (
             const [key, probability]
             of Object.entries(
-              model.probabilities
+              model.probabilities || {}
             )
           ) {
             const marketOdds =
-              odds[key] || null;
+              odds?.[key] || null;
 
             markets[key] = {
               prob: probability,
+
               confidence:
-                model.confidence[key],
+                model.confidence?.[key] ?? 0,
+
               odds: marketOdds,
-              ev: ev(
-                probability,
+
+              ev:
                 marketOdds
-              )
+                  ? ev(
+                      probability,
+                      marketOdds
+                    )
+                  : null
             };
           }
 
@@ -173,24 +200,33 @@ app.get("/api/day", async (req, res) => {
             league,
 
             model: {
-              sample: model.sample,
+              sample:
+                model.sample ?? 0,
+
               dataQuality:
-                model.dataQuality,
+                model.dataQuality ?? 0,
+
               lambdaHome:
-                model.lambdaHome,
+                model.lambdaHome ?? null,
+
               lambdaAway:
-                model.lambdaAway,
+                model.lambdaAway ?? null,
+
               markets
             }
           });
+        } catch (error) {
+          errors.push(
+            `${league.code} ${fixture?.home?.name || "Home"}-${fixture?.away?.name || "Away"}: ${error.message}`
+          );
         }
-      } catch (error) {
-        errors.push(
-          `${league.code}: ${error.message}`
-        );
       }
-    })
-  );
+    } catch (error) {
+      errors.push(
+        `${league.code}: ${error.message}`
+      );
+    }
+  }
 
   matches.sort(
     (a, b) =>
@@ -207,7 +243,9 @@ app.get("/api/day", async (req, res) => {
   });
 });
 
-app.use(express.static("public/public"));
+app.use(
+  express.static("public/public")
+);
 
 app.get("*", (req, res) => {
   res.sendFile(
