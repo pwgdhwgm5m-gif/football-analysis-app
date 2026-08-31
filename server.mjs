@@ -89,15 +89,17 @@ app.get("/api/day", async (req, res) => {
             season
           });
 
-        let oddsPack = {
-          events: [],
-          quota: null
-        };
-
         try {
-          oddsPack =
-            await oddsApi.oddsForLeague(
-              league.code
+  if (process.env.ODDS_API_KEY) {
+    const result = await oddsApi.oddsForLeague(league.code);
+
+    if (result?.events) {
+      oddsPack = result;
+    }
+  }
+} catch (error) {
+  errors.push(`${league.code} odds: ${error.message}`);
+}
             );
         } catch (error) {
           errors.push(
