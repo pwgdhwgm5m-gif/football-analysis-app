@@ -162,5 +162,5 @@ app.get("/api/turkey",async(req,res)=>{
     res.json(base);
   }catch(e){res.status(502).json({error:e.message})}
 });
-app.use(express.static("public"));
+app.use(express.static("public/public"));
 app.listen(PORT,()=>console.log(`Football Analysis running on ${PORT}`));
