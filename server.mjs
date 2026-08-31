@@ -205,12 +205,12 @@ app.get("/api/day", async (req, res) => {
   });
 });
 
-app.use(express.static("public"));
+app.use(express.static("public/public"));
 
 app.get("*", (req, res) => {
   res.sendFile(
     process.cwd() +
-      "/public/index.html"
+      "/public/public/index.html"
   );
 });
 
